@@ -10,16 +10,20 @@ INCLUDE( FindPackageHandleStandardArgs )
 # NOTE: for optional hardware or plugin support sources are added together later on.
 #
 set( SRC
+	# libraries
+	lib/mongoose/mongoose.c
+
+	# main
 	src/micasa.cpp
 	src/Arguments.cpp
 	src/Worker.cpp
 	src/Controller.cpp
-	src/Event.cpp
 	src/Logger.cpp
 	src/WebServer.cpp
 	src/Hardware.cpp
 	src/Device.cpp
 	src/Curl.cpp
+	src/Settings.cpp
 	src/Database.cpp
 
 	# hardware
@@ -57,6 +61,14 @@ if ( DEBUG )
 endif()
 
 #
+# Set SSL mode.
+#
+option( ENABLE_SSL "Build with SSL" NO )
+if ( ENABLE_SSL )
+	add_definitions( -D_WITH_SSL )
+endif()
+
+#
 # Add and compile open-zwave project.
 #
 option( WITH_OPENZWAVE "Build with OpenZWave libraries" YES )
@@ -90,32 +102,20 @@ if ( WITH_OPENZWAVE )
 endif()
 
 #
-# Add and compile json project.
+# Add JSON.
 #
-ExternalProject_Add(
-	JSON
+include_directories( ${CMAKE_CURRENT_BINARY_DIR}/lib/json )
 
-	GIT_REPOSITORY "https://github.com/nlohmann/json.git"
-	GIT_TAG "v2.0.7"
-
-	UPDATE_COMMAND ""
-	PATCH_COMMAND ""
-	TEST_COMMAND ""
-
-	SOURCE_DIR "${CMAKE_SOURCE_DIR}/lib/json"
-	PREFIX "${CMAKE_SOURCE_DIR}/lib/json-prefix"
-
-	CONFIGURE_COMMAND ""
-	BUILD_COMMAND ""
-	INSTALL_COMMAND ""
-)
-SET( JSON_INCLUDE_DIR ${CMAKE_CURRENT_BINARY_DIR}/lib/json/src )
-include_directories( ${JSON_INCLUDE_DIR} )
+#
+# Add Mongoose.
+#
+include_directories( ${CMAKE_CURRENT_BINARY_DIR}/lib/mongoose )
+add_definitions( -DMG_ENABLE_IPV6 -DMG_ENABLE_SSL )
 
 #
 # Set the target directory.
 #
-set( CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin )
+#set( CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin )
 
 #
 # Set compiler options.
@@ -172,6 +172,35 @@ else()
 ENDIF( CURL_FOUND )
 
 #
+# Check for OpenSSL
+#
+FIND_PACKAGE( OpenSSL )
+IF( OPENSSL_FOUND )
+	MESSAGE( STATUS "OpenSSL libraries found at: ${OPENSSL_LIBRARIES}" )
+	MESSAGE( STATUS "OpenSSL includes found at: ${OPENSSL_INCLUDE_DIRS}" )
+	INCLUDE_DIRECTORIES( ${OPENSSL_INCLUDE_DIRS} )
+	target_link_libraries( micasa ${OPENSSL_LIBRARIES} )
+else()
+	MESSAGE( FATAL_ERROR "OpenSSL not found on your system." )
+ENDIF( OPENSSL_FOUND )
+
+#
+# Check for Readline.
+# TODO: this is only necessary for the lua interpreter build. Find a way to eliminate this dependency.
+#
+FIND_PATH( READLINE_INCLUDE_DIR NAMES readline )
+FIND_LIBRARY( READLINE_LIBRARY NAMES readline )
+FIND_PACKAGE_HANDLE_STANDARD_ARGS( READLINE DEFAULT_MSG READLINE_LIBRARY READLINE_INCLUDE_DIR )
+IF( READLINE_FOUND )
+	MESSAGE( STATUS "Readline libraries found at: ${READLINE_LIBRARY}" )
+	MESSAGE( STATUS "Readline includes found at: ${READLINE_INCLUDE_DIR}" )
+	INCLUDE_DIRECTORIES( ${READLINE_INCLUDE_DIR} )
+	target_link_libraries( micasa ${READLINE_LIBRARY} )
+ELSE()
+	MESSAGE( FATAL_ERROR "Readline not found on your system. Try:\nsudo apt-get install libreadline-dev" )
+ENDIF( READLINE_FOUND )
+
+#
 # Check for SQLite3
 #
 FIND_PATH( SQLITE3_INCLUDE_DIR NAMES sqlite3.h )
@@ -189,4 +218,4 @@ ENDIF( SQLITE3_FOUND )
 #
 # Add the install targets.
 #
-install( TARGETS micasa DESTINATION bin )
+#install( TARGETS micasa DESTINATION bin )

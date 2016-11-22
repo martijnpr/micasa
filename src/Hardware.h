@@ -4,7 +4,6 @@
 #include <cassert>
 #endif // _DEBUG
 
-#include <iostream>
 #include <map>
 #include <mutex>
 #include <vector>
@@ -12,13 +11,17 @@
 
 #include "Logger.h"
 #include "WebServer.h"
+#include "Device.h"
+#include "Settings.h"
 
 namespace micasa {
 
-	class Hardware : public WebServerResource, public std::enable_shared_from_this<Hardware> {
+	class Hardware : public WebServer::ResourceHandler, public LoggerInstance, public std::enable_shared_from_this<Hardware> {
+		
+		friend class Controller;
 
 	public:
-		typedef enum {
+		enum HardwareType {
 			INTERNAL = 1,
 			HARMONY_HUB = 11,
 			OPEN_ZWAVE,
@@ -30,24 +33,38 @@ namespace micasa {
 			SOLAREDGE,
 			WEATHER_UNDERGROUND,
 			DOMOTICZ,
-		} HardwareType;
+		};
 		
-		Hardware( std::string id_, std::map<std::string, std::string> settings_ );
+		Hardware( const std::string id_, const std::string reference_, std::string name_ );
 		virtual ~Hardware();
 
-		static std::shared_ptr<Hardware> get( std::string id_, HardwareType hardwareType, std::map<std::string, std::string> settings_ );
-
-		virtual bool start();
-		virtual bool stop();
-		virtual bool handleRequest( std::string resource_, WebServerResource::Method method_, std::map<std::string, std::string> &data_ ) { return true; /* not implemented yet */ };
-
-		//std::shared_ptr<Device> declareDevice();
-		//std::shared_ptr<Device> getDevice();
+		virtual std::string toString() const =0;
 		
+		virtual void start();
+		virtual void stop();
+		
+		void handleResource( const WebServer::Resource& resource_, int& code_, nlohmann::json& output_ );
+		
+		std::string getId() const { return this->m_id; };
+		std::string getReference() const { return this->m_reference; };
+		Settings& getSettings() { return this->m_settings; };
+		
+		virtual void deviceUpdated( Device::UpdateSource source_, std::shared_ptr<Device> device_ ) =0;
+
 	protected:
 		const std::string m_id;
-		const std::map<std::string, std::string> m_settings;
-		
+		const std::string m_reference;
+		std::string m_name;
+		Settings m_settings;
+
+		std::shared_ptr<Device> _declareDevice( Device::DeviceType deviceType_, std::string reference_, std::string name_, std::map<std::string, std::string> settings_ );
+
+	private:
+		std::vector<std::shared_ptr<Device> > m_devices;
+		std::mutex m_devicesMutex;
+
+		static std::shared_ptr<Hardware> _factory( HardwareType hardwareType, std::string id_, std::string reference_, std::string name_ );
+
 	}; // class Hardware
 
 }; // namespace micasa

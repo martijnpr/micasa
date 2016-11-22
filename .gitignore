@@ -6,11 +6,12 @@ Makefile
 cmake_install.cmake
 *.xcodeproj
 *.xcworkspace
-
-bin/*
-lib/*
+core
+micasa
 
 .DS_Store
 .AppleDouble
+
+lib/open-zwave*
 
 micasa.db*

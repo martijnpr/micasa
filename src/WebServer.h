@@ -10,15 +10,25 @@
 
 #include "Worker.h"
 #include "Logger.h"
-#include "Database.h"
+
+#include "json.hpp"
+
+extern "C" {
+	
+	#include "mongoose.h"
+	
+	static void mongoose_handler( mg_connection* connection_, int event_, void* instance_ );
+	
+} // extern "C"
 
 namespace micasa {
 
-	class WebServerResource {
+	class WebServer final : public Worker, public LoggerInstance {
+
+		friend void ::mongoose_handler( struct mg_connection *connection_, int event_, void* instance_ );
 
 	public:
-
-		typedef enum {
+		enum ResourceMethod {
 			// v Retrieve all resources in a collection
 			// v Retrieve a single resource
 			GET = 1,
@@ -35,29 +45,47 @@ namespace micasa {
 			DELETE = 32,
 			// v Return available methods for resource or collection
 			OPTIONS = 64
-		} Method;
+		}; // enum Method
 
-		virtual bool handleRequest( std::string resource_, Method method_, std::map<std::string, std::string> &data_ ) =0;
+		class ResourceHandler; // forward declaration
+		
+		struct Resource {
+			std::string uri;
+			int methods;
+			std::string title;
+			std::shared_ptr<ResourceHandler> handler;
+		};
 
-	}; // class LoggerInstance
+		class ResourceHandler {
+			
+		public:
+			virtual void handleResource( const Resource& resource_, int& code_, nlohmann::json& output_ ) =0;
+		
+		}; // class ResourceHandler
 
-	class WebServer final : public Worker {
-
-	public:
 		WebServer();
 		~WebServer();
 		
 		std::string toString() const;
-		
-		void addResourceHandler( std::string resource_, int supportedMethods_, std::shared_ptr<WebServerResource> handler_ );
-		void removeResourceHandler( std::string resource_ );
+
+		void addResource( Resource resource_ );
+		void removeResourceAt( std::string uri_ );
+		void touchResourceAt( std::string uri_ );
+
+		void start();
+		void stop();
 
 	protected:
-		std::chrono::milliseconds _doWork();
-
+		std::chrono::milliseconds _work( unsigned long int iteration_ );
+		
 	private:
-		std::map<std::string, std::pair<int, std::shared_ptr<WebServerResource> > > m_resources;
+		mg_mgr m_manager;
+		mg_connection* m_connection;
+		
+		std::map<std::string, std::pair<Resource, std::string> > m_resources;
 		std::mutex m_resourcesMutex;
+
+		void _processHttpRequest( mg_connection* connection_, http_message* message_ );
 
 	}; // class WebServer
 

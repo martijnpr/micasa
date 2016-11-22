@@ -1,4 +1,7 @@
+#include <memory>
+
 #include "Database.h"
+#include "Structs.h"
 
 namespace micasa {
 
@@ -42,11 +45,11 @@ namespace micasa {
 		this->putQuery( "VACUUM" );
 
 		int version = atoi( this->getQueryValue( "PRAGMA user_version" ).c_str() );
-		if ( version < Database::c_queries.size() ) {
-			for ( auto queryIt = Database::c_queries.begin() + version; queryIt != Database::c_queries.end(); queryIt++ ) {
+		if ( version < c_queries.size() ) {
+			for ( auto queryIt = c_queries.begin() + version; queryIt != c_queries.end(); queryIt++ ) {
 				this->putQuery( *queryIt );
 			}
-			this->putQuery( "PRAGMA user_version=%d", Database::c_queries.size() );
+			this->putQuery( "PRAGMA user_version=%d", c_queries.size() );
 		}
 	}
 
@@ -74,7 +77,7 @@ namespace micasa {
 		}
 
 #ifdef _DEBUG
-		g_logger->log( Logger::LogLevel::VERBOSE, this, std::string( query ) );
+		g_logger->logRaw( Logger::LogLevel::DEBUG, this, std::string( query ) );
 #endif // _DEBUG
 
 		sqlite3_free( query );
@@ -133,18 +136,17 @@ namespace micasa {
 		va_start( arguments, query_ );
 		this->_wrapQuery( query_, arguments, [this, &result]( sqlite3_stmt *statement_ ) {
 			int columns = sqlite3_column_count( statement_ );
-			if ( 2 == columns ) {
-				while ( true ) {
-					if ( SQLITE_ROW == sqlite3_step( statement_ ) ) {
-						std::string key = std::string( reinterpret_cast<const char*>( sqlite3_column_text( statement_, 0 ) ) );
-						std::string value = std::string( reinterpret_cast<const char*>( sqlite3_column_text( statement_, 1 ) ) );
-						result[key] = value;
-					} else {
-						break;
-					}
+#ifdef _DEBUG
+			assert( 2 == columns && "Query result should contain exactly two columns." );
+#endif // _DEBUG
+			while ( true ) {
+				if ( SQLITE_ROW == sqlite3_step( statement_ ) ) {
+					std::string key = std::string( reinterpret_cast<const char*>( sqlite3_column_text( statement_, 0 ) ) );
+					std::string value = std::string( reinterpret_cast<const char*>( sqlite3_column_text( statement_, 1 ) ) );
+					result[key] = value;
+				} else {
+					break;
 				}
-			} else {
-				g_logger->log( Logger::LogLevel::ERROR, this, "Query result doesn't contain exactly 2 columns." );
 			}
 		} );
 		va_end( arguments );
@@ -158,13 +160,11 @@ namespace micasa {
 		va_list arguments;
 		va_start( arguments, query_ );
 		this->_wrapQuery( query_, arguments, [this, &result]( sqlite3_stmt *statement_ ) {
-			if (
-				SQLITE_ROW == sqlite3_step( statement_ )
-				&& sqlite3_column_count( statement_ ) == 1
-			) {
+			if ( SQLITE_ROW == sqlite3_step( statement_ ) ) {
+#ifdef _DEBUG
+				assert( sqlite3_column_count( statement_ ) == 1 && "Query result should contain exactly 1 value." );
+#endif // _DEBUG
 				result = std::string( reinterpret_cast<const char*>( sqlite3_column_text( statement_, 0 ) ) );
-			} else {
-				g_logger->log( Logger::LogLevel::ERROR, this, "Query result doesn't contain exactly 1 value." );
 			}
 		} );
 		va_end( arguments );
@@ -172,16 +172,20 @@ namespace micasa {
 		return result;
 	}
 
-	void Database::putQuery( std::string query_, ... ) const {
+	long Database::putQuery( std::string query_, ... ) const {
 		va_list arguments;
 		va_start( arguments, query_ );
-		this->_wrapQuery( query_, arguments, [this]( sqlite3_stmt *statement_ ) {
+		long insertId = -1;
+		this->_wrapQuery( query_, arguments, [this,&insertId]( sqlite3_stmt *statement_ ) {
 			if ( SQLITE_DONE != sqlite3_step( statement_ ) ) {
 				const char *error = sqlite3_errmsg( this->m_connection );
 				g_logger->log( Logger::LogLevel::ERROR, this, "Query rejected (%s).", error );
+			} else {
+				insertId = sqlite3_last_insert_rowid( this->m_connection );
 			}
 		} );
 		va_end( arguments );
+		return insertId;
 	}
 
 } // namespace micasa

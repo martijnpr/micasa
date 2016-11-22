@@ -1,6 +1,7 @@
 #include <iostream>
 
 #include "Controller.h"
+#include "Database.h"
 
 namespace micasa {
 
@@ -28,36 +29,46 @@ namespace micasa {
 		return "Controller";
 	};
 
-	std::chrono::milliseconds Controller::_doWork() {
-		return std::chrono::milliseconds( 1000 );
-	};
+	void Controller::start() {
+		g_logger->log( Logger::LogLevel::VERBOSE, this, "Starting..." );
 
-	bool Controller::start() {
-		if ( Worker::start() ) {
-			g_webServer->addResourceHandler( "hardware", WebServerResource::Method::GET | WebServerResource::Method::HEAD | WebServerResource::Method::POST, this->shared_from_this() );
-			g_webServer->addResourceHandler( "devices", WebServerResource::Method::GET | WebServerResource::Method::HEAD, this->shared_from_this() );
+		std::lock_guard<std::mutex> lock( this->m_hardwareMutex );
 
-			std::lock_guard<std::mutex> lock( this->m_hardwareMutex );
-
-			std::vector<std::map<std::string, std::string> > hardwareData = g_database->getQuery( "SELECT `id`, `type` FROM `hardware` ORDER BY `type`" );
-			for ( auto hardwareIt = hardwareData.begin(); hardwareIt != hardwareData.end(); hardwareIt++ ) {
-				Hardware::HardwareType type = static_cast<Hardware::HardwareType>( atoi( (*hardwareIt)["type"].c_str() ) );
-				std::map<std::string, std::string> settings = g_database->getQueryMap( "SELECT `key`, `value` FROM `settings` WHERE `hardware_id`=%q", (*hardwareIt).at( "id" ).c_str() );
-				std::shared_ptr<Hardware> hardware = Hardware::get( (*hardwareIt)["id"], type, settings );
-				if ( NULL != hardware ) {
-					hardware->start();
-					this->m_hardware.push_back( hardware );
-				} else {
-					g_logger->log( Logger::LogLevel::ERROR, this, "Hardware #%s has invalid hardware type %s.", (*hardwareIt)["id"].c_str(), (*hardwareIt)["type"].c_str() );
-				}
-			}
-			return true;
-		} else {
-			return false;
+		std::vector<std::map<std::string, std::string> > hardwareData = g_database->getQuery(
+			"SELECT `id`, `reference`, `name`, `type` "
+			"FROM `hardware`"
+		);
+		for ( auto hardwareIt = hardwareData.begin(); hardwareIt != hardwareData.end(); hardwareIt++ ) {
+			Hardware::HardwareType hardwareType = static_cast<Hardware::HardwareType>( atoi( (*hardwareIt)["type"].c_str() ) );
+			std::shared_ptr<Hardware> hardware = Hardware::_factory( hardwareType, (*hardwareIt)["id"], (*hardwareIt)["reference"], (*hardwareIt)["name"] );
+			hardware->start();
+			this->m_hardware.push_back( hardware );
 		}
+
+		g_webServer->addResource( {
+			"api/hardware",
+			WebServer::ResourceMethod::GET | WebServer::ResourceMethod::HEAD | WebServer::ResourceMethod::POST,
+			"Retrieve a list of available hardware.",
+			this->shared_from_this()
+		} );
+		g_webServer->addResource( {
+			"api/devices",
+			WebServer::ResourceMethod::GET | WebServer::ResourceMethod::HEAD,
+			"Retrieve a list of available devices.",
+			this->shared_from_this()
+		} );
+
+		this->_begin();
+		g_logger->log( Logger::LogLevel::NORMAL, this, "Started." );
 	};
 
-	bool Controller::stop() {
+	void Controller::stop() {
+		g_logger->log( Logger::LogLevel::VERBOSE, this, "Stopping..." );
+		this->_retire();
+
+		g_webServer->removeResourceAt( "api/hardware" );
+		g_webServer->removeResourceAt( "api/devices" );
+
 		{
 			std::lock_guard<std::mutex> lock( this->m_hardwareMutex );
 			for( auto hardwareIt = this->m_hardware.begin(); hardwareIt < this->m_hardware.end(); hardwareIt++ ) {
@@ -66,23 +77,62 @@ namespace micasa {
 			this->m_hardware.clear();
 		}
 
-		g_webServer->removeResourceHandler( "hardware" );
-		g_webServer->removeResourceHandler( "devices" );
-
-		return Worker::stop();
+		g_logger->log( Logger::LogLevel::NORMAL, this, "Stopped." );
 	};
 
-	std::shared_ptr<Hardware> Controller::declareHardware( Hardware::HardwareType hardwareType, std::string unit_, std::string name_, std::map<std::string, std::string> settings_ ) {
+	std::shared_ptr<Hardware> Controller::_declareHardware( Hardware::HardwareType hardwareType_, std::string reference_, std::string name_, std::map<std::string, std::string> settings_ ) {
+#ifdef _DEBUG
+		assert( this->isRunning() && "Controller should be running when declaring hardware." );
+#endif // _DEBUG
 		
+		std::lock_guard<std::mutex> lock( this->m_hardwareMutex );
+		
+		for ( auto hardwareIt = this->m_hardware.begin(); hardwareIt != this->m_hardware.end(); hardwareIt++ ) {
+			if ( (*hardwareIt)->getReference() == reference_ ) {
+				return *hardwareIt;
+			}
+		}
+
+		long id = g_database->putQuery(
+			"INSERT INTO `hardware` ( `reference`, `type`, `name` ) "
+			"VALUES ( %Q, %d, %Q )"
+			, reference_.c_str(), static_cast<int>( hardwareType_ ), name_.c_str()
+		);
+		
+		std::shared_ptr<Hardware> hardware = Hardware::_factory( hardwareType_, std::to_string( id ), reference_, name_ );
+
+		Settings& settings = hardware->getSettings();
+		settings.insert( settings_ );
+		settings.commit( *hardware );
+		
+		hardware->start();
+		this->m_hardware.push_back( hardware );
+
+		g_webServer->touchResourceAt( "api/hardware" );
+		
+		return hardware;
 	};
 
-	std::shared_ptr<Hardware> Controller::getHardwareById( std::string id_ ) {
+	std::chrono::milliseconds Controller::_work( unsigned long int iteration_ ) {
 		
-	};
-	
-	std::shared_ptr<Hardware> Controller::getHardwareByUnit( std::string unit_ ) {
+		// TODO instruct all devices to generate trends every 5 minutes. This can be done by
+		// grouping around hour and store the max(hour) in the date field of the trend.
 		
+		return std::chrono::milliseconds( 1000 );
 	};
 
-	
+	void Controller::handleResource( const WebServer::Resource& resource_, int& code_, nlohmann::json& output_ ) {
+		if ( resource_.uri == "api/hardware" ) {
+			output_ = g_database->getQuery(
+				"SELECT `id`, `type`, `name` "
+				"FROM `hardware`"
+			);
+		} else if ( resource_.uri == "api/devices" ) {
+			output_ = g_database->getQuery(
+				"SELECT `id`, `hardware_id`, `type`, `name` "
+				"FROM `devices`"
+			);
+		}
+	};
+
 }; // namespace micasa
